@@ -21,12 +21,13 @@ UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'outputs'
 SIGNATURE_FOLDER = 'signatures'
 ALLOWED_EXTENSIONS = {'pdf'}
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB (augmenté)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 app.config['SIGNATURE_FOLDER'] = SIGNATURE_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 # Créer les dossiers nécessaires
 for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER, SIGNATURE_FOLDER]:
@@ -65,26 +66,72 @@ class PDFSigner:
         return positions
     
     def _extract_text_with_ocr(self, page):
-        """Extrait le texte d'une page scannée avec OCR"""
+        """Extrait le texte d'une page scannée avec OCR (optimisé)"""
         try:
             import pytesseract
             from PIL import Image
             import io
             
-            # Convertir la page en image
-            pix = page.get_pixmap(dpi=300)
+            # Convertir la page en image à résolution réduite pour plus de rapidité
+            pix = page.get_pixmap(dpi=150)  # 150 au lieu de 300 pour plus de rapidité
             img_data = pix.tobytes("png")
             img = Image.open(io.BytesIO(img_data))
             
-            # OCR avec tesseract
-            text = pytesseract.image_to_string(img, lang='fra')
-            
-            # Obtenir les positions des mots
+            # Obtenir les positions des mots (sans extraire tout le texte)
             data = pytesseract.image_to_data(img, lang='fra', output_type=pytesseract.Output.DICT)
             
-            return text, data
-        except:
-            return "", None
+            return data
+        except Exception as e:
+            print(f"Erreur OCR: {e}")
+            return None
+    
+    def _find_zones_with_ocr(self, page):
+        """Trouve les deux zones (date et signature) en un seul appel OCR"""
+        ocr_data = self._extract_text_with_ocr(page)
+        
+        if not ocr_data:
+            return None, None
+        
+        # Chercher "CADRE" ou "responsable" puis "Date" et "Signature"
+        cadre_y = None
+        date_pos = None
+        signature_pos = None
+        
+        n_boxes = len(ocr_data['text'])
+        for i in range(n_boxes):
+            text = ocr_data['text'][i].lower()
+            if not text.strip():
+                continue
+            
+            # Chercher le cadre de référence
+            if not cadre_y and any(word in text for word in ['cadre', 'responsable', 'administration', 'reserve']):
+                cadre_y = ocr_data['top'][i]
+            
+            # Chercher "Date" après le cadre et à gauche
+            if cadre_y and not date_pos and 'date' in text:
+                x = ocr_data['left'][i]
+                y = ocr_data['top'][i]
+                
+                if y > cadre_y and x < 250:  # À gauche
+                    date_x = x + ocr_data['width'][i] + 10
+                    date_y = y + ocr_data['height'][i] // 2
+                    date_pos = (date_x, date_y)
+            
+            # Chercher "Signature" après le cadre et à droite
+            if cadre_y and not signature_pos and 'signature' in text:
+                x = ocr_data['left'][i]
+                y = ocr_data['top'][i]
+                
+                if y > cadre_y and x > 250:  # À droite
+                    sig_x = x + ocr_data['width'][i] + 10
+                    sig_y = y + ocr_data['height'][i] // 2
+                    signature_pos = (sig_x, sig_y)
+            
+            # Si on a trouvé les deux, on peut arrêter
+            if date_pos and signature_pos:
+                break
+        
+        return date_pos, signature_pos
     
     def _find_signature_zone(self, page):
         """Trouve la zone de signature dans le tableau responsable"""
@@ -99,11 +146,10 @@ class PDFSigner:
                         has_text = True
                         break
         
-        # Si pas de texte extractible, utiliser OCR
+        # Si pas de texte extractible, utiliser OCR (optimisé)
         if not has_text:
-            text, ocr_data = self._extract_text_with_ocr(page)
-            if ocr_data:
-                return self._find_signature_zone_ocr(page, ocr_data)
+            # Utiliser la fonction optimisée qui trouve les deux zones en un appel
+            return None  # Sera géré par sign_pdf
         
         # Chercher plusieurs variantes du tableau cible
         responsable_y = None
@@ -120,7 +166,6 @@ class PDFSigner:
                     line_text = ""
                     line_y = None
                     
-                    # Récupérer tout le texte de la ligne
                     for span in line.get("spans", []):
                         text = span.get("text", "").lower()
                         line_text += text + " "
@@ -128,7 +173,6 @@ class PDFSigner:
                             bbox = span.get("bbox", [])
                             line_y = bbox[1]
                     
-                    # Vérifier si la ligne contient un des mots-clés cibles
                     for keyword1, keyword2 in target_keywords:
                         if keyword1 in line_text and keyword2 in line_text:
                             responsable_y = line_y
@@ -137,7 +181,6 @@ class PDFSigner:
                     if responsable_y:
                         break
         
-        # Si on a trouvé le tableau responsable, chercher "Signature :" en dessous
         if responsable_y:
             signature_candidates = []
             
@@ -148,49 +191,14 @@ class PDFSigner:
                             text = span.get("text", "").lower()
                             bbox = span.get("bbox", [])
                             
-                            # Chercher "Signature" après le texte "responsable"
-                            # et dans la partie droite du document (x > 250)
                             if bbox[1] > responsable_y and "signature" in text and bbox[0] > 250:
-                                x = bbox[2] + 10  # Juste après le texte "Signature :"
+                                x = bbox[2] + 10
                                 y = bbox[1]
                                 signature_candidates.append((x, y, bbox[2]))
             
-            # Prendre la signature la plus à droite (pour éviter "signature de l'étudiant")
             if signature_candidates:
                 signature_candidates.sort(key=lambda s: s[2], reverse=True)
                 return (signature_candidates[0][0], signature_candidates[0][1])
-        
-        return None
-    
-    def _find_signature_zone_ocr(self, page, ocr_data):
-        """Trouve la zone signature avec données OCR"""
-        page_height = page.rect.height
-        
-        # Chercher "CADRE" ou "responsable" puis "Signature"
-        cadre_y = None
-        signature_x = None
-        signature_y = None
-        
-        n_boxes = len(ocr_data['text'])
-        for i in range(n_boxes):
-            text = ocr_data['text'][i].lower()
-            
-            # Chercher le cadre de référence
-            if not cadre_y and any(word in text for word in ['cadre', 'responsable', 'administration']):
-                cadre_y = ocr_data['top'][i]
-            
-            # Chercher "Signature" après le cadre et à droite
-            if cadre_y and 'signature' in text:
-                x = ocr_data['left'][i]
-                y = ocr_data['top'][i]
-                
-                if y > cadre_y and x > 200:  # À droite du document
-                    signature_x = x + ocr_data['width'][i] + 10
-                    signature_y = y + ocr_data['height'][i] // 2
-                    break
-        
-        if signature_x and signature_y:
-            return (signature_x, signature_y)
         
         return None
     
@@ -207,11 +215,9 @@ class PDFSigner:
                         has_text = True
                         break
         
-        # Si pas de texte extractible, utiliser OCR
+        # Si pas de texte extractible, sera géré par sign_pdf avec OCR optimisé
         if not has_text:
-            text, ocr_data = self._extract_text_with_ocr(page)
-            if ocr_data:
-                return self._find_date_zone_ocr(page, ocr_data)
+            return None
         
         # Chercher plusieurs variantes du tableau cible
         responsable_y = None
@@ -243,7 +249,6 @@ class PDFSigner:
                     if responsable_y:
                         break
         
-        # Si on a trouvé le tableau responsable, chercher "Date :" en dessous
         if responsable_y:
             for block in text_instances.get("blocks", []):
                 if block.get("type") == 0:
@@ -252,42 +257,10 @@ class PDFSigner:
                             text = span.get("text", "").lower()
                             bbox = span.get("bbox", [])
                             
-                            # Chercher "Date" après le texte "responsable"
-                            # Date est normalement à gauche (x < 200)
                             if bbox[1] > responsable_y and "date" in text and bbox[0] < 200:
                                 x = bbox[2] + 10
                                 y = bbox[1]
                                 return (x, y)
-        
-        return None
-    
-    def _find_date_zone_ocr(self, page, ocr_data):
-        """Trouve la zone date avec données OCR"""
-        # Chercher "CADRE" ou "responsable" puis "Date"
-        cadre_y = None
-        date_x = None
-        date_y = None
-        
-        n_boxes = len(ocr_data['text'])
-        for i in range(n_boxes):
-            text = ocr_data['text'][i].lower()
-            
-            # Chercher le cadre de référence
-            if not cadre_y and any(word in text for word in ['cadre', 'responsable', 'administration']):
-                cadre_y = ocr_data['top'][i]
-            
-            # Chercher "Date" après le cadre et à gauche
-            if cadre_y and 'date' in text:
-                x = ocr_data['left'][i]
-                y = ocr_data['top'][i]
-                
-                if y > cadre_y and x < 200:  # À gauche du document
-                    date_x = x + ocr_data['width'][i] + 10
-                    date_y = y + ocr_data['height'][i] // 2
-                    break
-        
-        if date_x and date_y:
-            return (date_x, date_y)
         
         return None
     
@@ -330,6 +303,7 @@ class PDFSigner:
             for page_num in range(len(doc) - 1, -1, -1):
                 page = doc[page_num]
                 
+                # Essayer détection normale d'abord
                 if not signature_added:
                     sig_pos = self._find_signature_zone(page)
                     if sig_pos:
@@ -342,6 +316,31 @@ class PDFSigner:
                         self._insert_date(page, date_pos)
                         date_added = True
                 
+                # Si rien trouvé avec méthode normale, essayer OCR (un seul appel)
+                if (not signature_added or not date_added):
+                    # Vérifier si c'est un PDF scanné
+                    text_instances = page.get_text("dict")
+                    has_text = False
+                    for block in text_instances.get("blocks", []):
+                        if block.get("type") == 0:
+                            for line in block.get("lines", []):
+                                if line.get("spans", []):
+                                    has_text = True
+                                    break
+                    
+                    # Si pas de texte, utiliser OCR optimisé
+                    if not has_text:
+                        date_ocr, sig_ocr = self._find_zones_with_ocr(page)
+                        
+                        if not date_added and date_ocr:
+                            self._insert_date(page, date_ocr)
+                            date_added = True
+                        
+                        if not signature_added and sig_ocr:
+                            self._insert_signature(page, sig_ocr, signature_width)
+                            signature_added = True
+                
+                # Si tout est trouvé, pas besoin de continuer
                 if signature_added and date_added:
                     break
             
