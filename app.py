@@ -64,9 +64,46 @@ class PDFSigner:
         
         return positions
     
+    def _extract_text_with_ocr(self, page):
+        """Extrait le texte d'une page scannée avec OCR"""
+        try:
+            import pytesseract
+            from PIL import Image
+            import io
+            
+            # Convertir la page en image
+            pix = page.get_pixmap(dpi=300)
+            img_data = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_data))
+            
+            # OCR avec tesseract
+            text = pytesseract.image_to_string(img, lang='fra')
+            
+            # Obtenir les positions des mots
+            data = pytesseract.image_to_data(img, lang='fra', output_type=pytesseract.Output.DICT)
+            
+            return text, data
+        except:
+            return "", None
+    
     def _find_signature_zone(self, page):
         """Trouve la zone de signature dans le tableau responsable"""
         text_instances = page.get_text("dict")
+        
+        # Vérifier si le PDF contient du texte extractible
+        has_text = False
+        for block in text_instances.get("blocks", []):
+            if block.get("type") == 0:
+                for line in block.get("lines", []):
+                    if line.get("spans", []):
+                        has_text = True
+                        break
+        
+        # Si pas de texte extractible, utiliser OCR
+        if not has_text:
+            text, ocr_data = self._extract_text_with_ocr(page)
+            if ocr_data:
+                return self._find_signature_zone_ocr(page, ocr_data)
         
         # Chercher plusieurs variantes du tableau cible
         responsable_y = None
@@ -125,9 +162,56 @@ class PDFSigner:
         
         return None
     
+    def _find_signature_zone_ocr(self, page, ocr_data):
+        """Trouve la zone signature avec données OCR"""
+        page_height = page.rect.height
+        
+        # Chercher "CADRE" ou "responsable" puis "Signature"
+        cadre_y = None
+        signature_x = None
+        signature_y = None
+        
+        n_boxes = len(ocr_data['text'])
+        for i in range(n_boxes):
+            text = ocr_data['text'][i].lower()
+            
+            # Chercher le cadre de référence
+            if not cadre_y and any(word in text for word in ['cadre', 'responsable', 'administration']):
+                cadre_y = ocr_data['top'][i]
+            
+            # Chercher "Signature" après le cadre et à droite
+            if cadre_y and 'signature' in text:
+                x = ocr_data['left'][i]
+                y = ocr_data['top'][i]
+                
+                if y > cadre_y and x > 200:  # À droite du document
+                    signature_x = x + ocr_data['width'][i] + 10
+                    signature_y = y + ocr_data['height'][i] // 2
+                    break
+        
+        if signature_x and signature_y:
+            return (signature_x, signature_y)
+        
+        return None
+    
     def _find_date_zone(self, page):
         """Trouve la zone de date dans le tableau responsable"""
         text_instances = page.get_text("dict")
+        
+        # Vérifier si le PDF contient du texte extractible
+        has_text = False
+        for block in text_instances.get("blocks", []):
+            if block.get("type") == 0:
+                for line in block.get("lines", []):
+                    if line.get("spans", []):
+                        has_text = True
+                        break
+        
+        # Si pas de texte extractible, utiliser OCR
+        if not has_text:
+            text, ocr_data = self._extract_text_with_ocr(page)
+            if ocr_data:
+                return self._find_date_zone_ocr(page, ocr_data)
         
         # Chercher plusieurs variantes du tableau cible
         responsable_y = None
@@ -174,6 +258,36 @@ class PDFSigner:
                                 x = bbox[2] + 10
                                 y = bbox[1]
                                 return (x, y)
+        
+        return None
+    
+    def _find_date_zone_ocr(self, page, ocr_data):
+        """Trouve la zone date avec données OCR"""
+        # Chercher "CADRE" ou "responsable" puis "Date"
+        cadre_y = None
+        date_x = None
+        date_y = None
+        
+        n_boxes = len(ocr_data['text'])
+        for i in range(n_boxes):
+            text = ocr_data['text'][i].lower()
+            
+            # Chercher le cadre de référence
+            if not cadre_y and any(word in text for word in ['cadre', 'responsable', 'administration']):
+                cadre_y = ocr_data['top'][i]
+            
+            # Chercher "Date" après le cadre et à gauche
+            if cadre_y and 'date' in text:
+                x = ocr_data['left'][i]
+                y = ocr_data['top'][i]
+                
+                if y > cadre_y and x < 200:  # À gauche du document
+                    date_x = x + ocr_data['width'][i] + 10
+                    date_y = y + ocr_data['height'][i] // 2
+                    break
+        
+        if date_x and date_y:
+            return (date_x, date_y)
         
         return None
     
