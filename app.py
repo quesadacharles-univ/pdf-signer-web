@@ -65,44 +65,102 @@ class PDFSigner:
         return positions
     
     def _find_signature_zone(self, page):
-        """Trouve la zone de signature"""
-        signature_keywords = [
-            "signature", "signé", "signe", "paraphe",
-            "lu et approuvé", "bon pour accord"
-        ]
-        positions = self._find_keyword_positions(page, signature_keywords)
+        """Trouve la zone de signature dans le tableau responsable"""
+        text_instances = page.get_text("dict")
         
-        if positions:
-            x, y, _ = positions[0]
-            return (x + 20, y + 10)
+        # Chercher "responsable de la formation" pour localiser le bon tableau
+        responsable_y = None
+        for block in text_instances.get("blocks", []):
+            if block.get("type") == 0:
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = span.get("text", "").lower()
+                        if "responsable" in text and ("formation" in text or "stage" in text):
+                            bbox = span.get("bbox", [])
+                            responsable_y = bbox[1]  # Position Y du texte "responsable"
+                            break
+        
+        # Si on a trouvé le tableau responsable, chercher "Signature :" en dessous
+        if responsable_y:
+            for block in text_instances.get("blocks", []):
+                if block.get("type") == 0:
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            text = span.get("text", "").lower()
+                            bbox = span.get("bbox", [])
+                            
+                            # Chercher "Signature" après le texte "responsable"
+                            if bbox[1] > responsable_y and "signature" in text:
+                                # Position après "Signature :"
+                                x = bbox[2] + 10  # Juste après le texte "Signature :"
+                                y = bbox[1]
+                                return (x, y)
+        
         return None
     
     def _find_date_zone(self, page):
-        """Trouve la zone de date"""
-        date_keywords = ["date", "fait le", "le", "à"]
-        positions = self._find_keyword_positions(page, date_keywords)
+        """Trouve la zone de date dans le tableau responsable"""
+        text_instances = page.get_text("dict")
         
-        if positions:
-            x, y, _ = positions[0]
-            return (x + 50, y - 5)
+        # Chercher "responsable de la formation" pour localiser le bon tableau
+        responsable_y = None
+        for block in text_instances.get("blocks", []):
+            if block.get("type") == 0:
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = span.get("text", "").lower()
+                        if "responsable" in text and ("formation" in text or "stage" in text):
+                            bbox = span.get("bbox", [])
+                            responsable_y = bbox[1]
+                            break
+        
+        # Si on a trouvé le tableau responsable, chercher "Date :" en dessous
+        if responsable_y:
+            for block in text_instances.get("blocks", []):
+                if block.get("type") == 0:
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            text = span.get("text", "").lower()
+                            bbox = span.get("bbox", [])
+                            
+                            # Chercher "Date" après le texte "responsable"
+                            if bbox[1] > responsable_y and "date" in text and bbox[0] < 200:  # Date est à gauche
+                                # Position après "Date :"
+                                x = bbox[2] + 10  # Juste après "Date :"
+                                y = bbox[1]
+                                return (x, y)
+        
         return None
     
-    def _insert_signature(self, page, position, width=80):
-        """Insère la signature"""
+    def _insert_signature(self, page, position, width=60):
+        """Insère la signature avec une taille adaptée"""
         x, y = position
         img = Image.open(self.signature_path)
         aspect_ratio = img.height / img.width
         height = width * aspect_ratio
-        rect = fitz.Rect(x, y, x + width, y + height)
+        
+        # Ajuster pour que la signature soit bien positionnée verticalement
+        y_adjusted = y - 5  # Légèrement au-dessus
+        
+        rect = fitz.Rect(x, y_adjusted, x + width, y_adjusted + height)
         page.insert_image(rect, filename=self.signature_path)
     
-    def _insert_date(self, page, position, font_size=10):
-        """Insère la date"""
+    def _insert_date(self, page, position, font_size=9):
+        """Insère la date avec une taille de police adaptée"""
         x, y = position
-        page.insert_text((x, y), self.current_date, fontsize=font_size, 
-                        fontname="helv", color=(0, 0, 0))
+        
+        # Ajuster verticalement pour aligner avec le champ
+        y_adjusted = y + 3
+        
+        page.insert_text(
+            (x, y_adjusted),
+            self.current_date,
+            fontsize=font_size,
+            fontname="helv",
+            color=(0, 0, 0)
+        )
     
-    def sign_pdf(self, input_path, output_path, signature_width=80):
+    def sign_pdf(self, input_path, output_path, signature_width=60):
         """Signe un PDF"""
         try:
             doc = fitz.open(input_path)
