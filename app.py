@@ -65,73 +65,29 @@ class PDFSigner:
         
         return positions
     
-    def _extract_text_with_ocr(self, page):
-        """Extrait le texte d'une page scannée avec OCR (optimisé)"""
-        try:
-            import pytesseract
-            from PIL import Image
-            import io
-            
-            # Convertir la page en image à résolution réduite pour plus de rapidité
-            pix = page.get_pixmap(dpi=150)  # 150 au lieu de 300 pour plus de rapidité
-            img_data = pix.tobytes("png")
-            img = Image.open(io.BytesIO(img_data))
-            
-            # Obtenir les positions des mots (sans extraire tout le texte)
-            data = pytesseract.image_to_data(img, lang='fra', output_type=pytesseract.Output.DICT)
-            
-            return data
-        except Exception as e:
-            print(f"Erreur OCR: {e}")
-            return None
-    
-    def _find_zones_with_ocr(self, page):
-        """Trouve les deux zones (date et signature) en un seul appel OCR"""
-        ocr_data = self._extract_text_with_ocr(page)
+    def _find_zones_fixed_positions(self, page):
+        """
+        Trouve les zones avec des positions fixes pour formulaires standards
+        Utilisé pour les PDFs scannés (plus rapide que OCR)
+        """
+        page_height = page.rect.height
+        page_width = page.rect.width
         
-        if not ocr_data:
-            return None, None
+        # Positions fixes basées sur le format standard des formulaires universitaires
+        # Ces positions sont calculées pour les cadres "responsable" typiques
         
-        # Chercher "CADRE" ou "responsable" puis "Date" et "Signature"
-        cadre_y = None
-        date_pos = None
-        signature_pos = None
+        # Le cadre est généralement dans le dernier quart de la page
+        cadre_y_start = page_height * 0.75  # 75% de la hauteur
         
-        n_boxes = len(ocr_data['text'])
-        for i in range(n_boxes):
-            text = ocr_data['text'][i].lower()
-            if not text.strip():
-                continue
-            
-            # Chercher le cadre de référence
-            if not cadre_y and any(word in text for word in ['cadre', 'responsable', 'administration', 'reserve']):
-                cadre_y = ocr_data['top'][i]
-            
-            # Chercher "Date" après le cadre et à gauche
-            if cadre_y and not date_pos and 'date' in text:
-                x = ocr_data['left'][i]
-                y = ocr_data['top'][i]
-                
-                if y > cadre_y and x < 250:  # À gauche
-                    date_x = x + ocr_data['width'][i] + 10
-                    date_y = y + ocr_data['height'][i] // 2
-                    date_pos = (date_x, date_y)
-            
-            # Chercher "Signature" après le cadre et à droite
-            if cadre_y and not signature_pos and 'signature' in text:
-                x = ocr_data['left'][i]
-                y = ocr_data['top'][i]
-                
-                if y > cadre_y and x > 250:  # À droite
-                    sig_x = x + ocr_data['width'][i] + 10
-                    sig_y = y + ocr_data['height'][i] // 2
-                    signature_pos = (sig_x, sig_y)
-            
-            # Si on a trouvé les deux, on peut arrêter
-            if date_pos and signature_pos:
-                break
+        # Date : à gauche, environ 10% de la largeur
+        date_x = 90
+        date_y = page_height - 85  # 85 points du bas
         
-        return date_pos, signature_pos
+        # Signature : à droite, environ 65% de la largeur
+        signature_x = page_width * 0.62
+        signature_y = page_height - 85  # Même hauteur que la date
+        
+        return (date_x, date_y), (signature_x, signature_y)
     
     def _find_signature_zone(self, page):
         """Trouve la zone de signature dans le tableau responsable"""
@@ -316,7 +272,7 @@ class PDFSigner:
                         self._insert_date(page, date_pos)
                         date_added = True
                 
-                # Si rien trouvé avec méthode normale, essayer OCR (un seul appel)
+                # Si rien trouvé avec méthode normale, utiliser positions fixes
                 if (not signature_added or not date_added):
                     # Vérifier si c'est un PDF scanné
                     text_instances = page.get_text("dict")
@@ -328,16 +284,16 @@ class PDFSigner:
                                     has_text = True
                                     break
                     
-                    # Si pas de texte, utiliser OCR optimisé
+                    # Si pas de texte, utiliser positions fixes (rapide et fiable)
                     if not has_text:
-                        date_ocr, sig_ocr = self._find_zones_with_ocr(page)
+                        date_fixed, sig_fixed = self._find_zones_fixed_positions(page)
                         
-                        if not date_added and date_ocr:
-                            self._insert_date(page, date_ocr)
+                        if not date_added and date_fixed:
+                            self._insert_date(page, date_fixed)
                             date_added = True
                         
-                        if not signature_added and sig_ocr:
-                            self._insert_signature(page, sig_ocr, signature_width)
+                        if not signature_added and sig_fixed:
+                            self._insert_signature(page, sig_fixed, signature_width)
                             signature_added = True
                 
                 # Si tout est trouvé, pas besoin de continuer
