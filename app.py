@@ -68,20 +68,42 @@ class PDFSigner:
         """Trouve la zone de signature dans le tableau responsable"""
         text_instances = page.get_text("dict")
         
-        # Chercher "responsable de la formation" pour localiser le bon tableau
+        # Chercher plusieurs variantes du tableau cible
         responsable_y = None
+        target_keywords = [
+            ("responsable", "formation"),
+            ("responsable", "stage"),
+            ("cadre", "administration"),
+            ("cadre", "reserve")
+        ]
+        
         for block in text_instances.get("blocks", []):
             if block.get("type") == 0:
                 for line in block.get("lines", []):
+                    line_text = ""
+                    line_y = None
+                    
+                    # Récupérer tout le texte de la ligne
                     for span in line.get("spans", []):
                         text = span.get("text", "").lower()
-                        if "responsable" in text and ("formation" in text or "stage" in text):
+                        line_text += text + " "
+                        if line_y is None:
                             bbox = span.get("bbox", [])
-                            responsable_y = bbox[1]  # Position Y du texte "responsable"
+                            line_y = bbox[1]
+                    
+                    # Vérifier si la ligne contient un des mots-clés cibles
+                    for keyword1, keyword2 in target_keywords:
+                        if keyword1 in line_text and keyword2 in line_text:
+                            responsable_y = line_y
                             break
+                    
+                    if responsable_y:
+                        break
         
         # Si on a trouvé le tableau responsable, chercher "Signature :" en dessous
         if responsable_y:
+            signature_candidates = []
+            
             for block in text_instances.get("blocks", []):
                 if block.get("type") == 0:
                     for line in block.get("lines", []):
@@ -90,11 +112,16 @@ class PDFSigner:
                             bbox = span.get("bbox", [])
                             
                             # Chercher "Signature" après le texte "responsable"
-                            if bbox[1] > responsable_y and "signature" in text:
-                                # Position après "Signature :"
+                            # et dans la partie droite du document (x > 250)
+                            if bbox[1] > responsable_y and "signature" in text and bbox[0] > 250:
                                 x = bbox[2] + 10  # Juste après le texte "Signature :"
                                 y = bbox[1]
-                                return (x, y)
+                                signature_candidates.append((x, y, bbox[2]))
+            
+            # Prendre la signature la plus à droite (pour éviter "signature de l'étudiant")
+            if signature_candidates:
+                signature_candidates.sort(key=lambda s: s[2], reverse=True)
+                return (signature_candidates[0][0], signature_candidates[0][1])
         
         return None
     
@@ -102,17 +129,35 @@ class PDFSigner:
         """Trouve la zone de date dans le tableau responsable"""
         text_instances = page.get_text("dict")
         
-        # Chercher "responsable de la formation" pour localiser le bon tableau
+        # Chercher plusieurs variantes du tableau cible
         responsable_y = None
+        target_keywords = [
+            ("responsable", "formation"),
+            ("responsable", "stage"),
+            ("cadre", "administration"),
+            ("cadre", "reserve")
+        ]
+        
         for block in text_instances.get("blocks", []):
             if block.get("type") == 0:
                 for line in block.get("lines", []):
+                    line_text = ""
+                    line_y = None
+                    
                     for span in line.get("spans", []):
                         text = span.get("text", "").lower()
-                        if "responsable" in text and ("formation" in text or "stage" in text):
+                        line_text += text + " "
+                        if line_y is None:
                             bbox = span.get("bbox", [])
-                            responsable_y = bbox[1]
+                            line_y = bbox[1]
+                    
+                    for keyword1, keyword2 in target_keywords:
+                        if keyword1 in line_text and keyword2 in line_text:
+                            responsable_y = line_y
                             break
+                    
+                    if responsable_y:
+                        break
         
         # Si on a trouvé le tableau responsable, chercher "Date :" en dessous
         if responsable_y:
@@ -124,23 +169,24 @@ class PDFSigner:
                             bbox = span.get("bbox", [])
                             
                             # Chercher "Date" après le texte "responsable"
-                            if bbox[1] > responsable_y and "date" in text and bbox[0] < 200:  # Date est à gauche
-                                # Position après "Date :"
-                                x = bbox[2] + 10  # Juste après "Date :"
+                            # Date est normalement à gauche (x < 200)
+                            if bbox[1] > responsable_y and "date" in text and bbox[0] < 200:
+                                x = bbox[2] + 10
                                 y = bbox[1]
                                 return (x, y)
         
         return None
     
-    def _insert_signature(self, page, position, width=60):
-        """Insère la signature avec une taille adaptée"""
+    def _insert_signature(self, page, position, width=50):
+        """Insère la signature avec une taille adaptée au cadre"""
         x, y = position
         img = Image.open(self.signature_path)
         aspect_ratio = img.height / img.width
         height = width * aspect_ratio
         
         # Ajuster pour que la signature soit bien positionnée verticalement
-        y_adjusted = y - 5  # Légèrement au-dessus
+        # et centrée dans le cadre
+        y_adjusted = y - 3
         
         rect = fitz.Rect(x, y_adjusted, x + width, y_adjusted + height)
         page.insert_image(rect, filename=self.signature_path)
@@ -160,7 +206,7 @@ class PDFSigner:
             color=(0, 0, 0)
         )
     
-    def sign_pdf(self, input_path, output_path, signature_width=60):
+    def sign_pdf(self, input_path, output_path, signature_width=50):
         """Signe un PDF"""
         try:
             doc = fitz.open(input_path)
