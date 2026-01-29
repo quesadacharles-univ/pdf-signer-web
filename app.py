@@ -65,29 +65,18 @@ class PDFSigner:
         
         return positions
     
-    def _find_zones_fixed_positions(self, page):
-        """
-        Trouve les zones avec des positions fixes pour formulaires standards
-        Utilisé pour les PDFs scannés (plus rapide que OCR)
-        """
-        page_height = page.rect.height
-        page_width = page.rect.width
+    def _is_scanned_pdf(self, page):
+        """Vérifie si une page est scannée (sans texte extractible)"""
+        text_instances = page.get_text("dict")
         
-        # Positions fixes basées sur le format standard des formulaires universitaires
-        # Ces positions sont calculées pour les cadres "responsable" typiques
+        # Vérifier si le PDF contient du texte extractible
+        for block in text_instances.get("blocks", []):
+            if block.get("type") == 0:  # Type 0 = texte
+                for line in block.get("lines", []):
+                    if line.get("spans", []):
+                        return False  # Texte trouvé = pas scanné
         
-        # Le cadre est généralement dans le dernier quart de la page
-        cadre_y_start = page_height * 0.75  # 75% de la hauteur
-        
-        # Date : à gauche, environ 10% de la largeur
-        date_x = 90
-        date_y = page_height - 85  # 85 points du bas
-        
-        # Signature : à droite, environ 65% de la largeur
-        signature_x = page_width * 0.62
-        signature_y = page_height - 85  # Même hauteur que la date
-        
-        return (date_x, date_y), (signature_x, signature_y)
+        return True  # Pas de texte = scanné
     
     def _find_signature_zone(self, page):
         """Trouve la zone de signature dans le tableau responsable"""
@@ -255,11 +244,16 @@ class PDFSigner:
             doc = fitz.open(input_path)
             signature_added = False
             date_added = False
+            is_scanned = False
             
             for page_num in range(len(doc) - 1, -1, -1):
                 page = doc[page_num]
                 
-                # Essayer détection normale d'abord
+                # Vérifier si la page est scannée
+                if self._is_scanned_pdf(page):
+                    is_scanned = True
+                    continue
+                
                 if not signature_added:
                     sig_pos = self._find_signature_zone(page)
                     if sig_pos:
@@ -272,36 +266,42 @@ class PDFSigner:
                         self._insert_date(page, date_pos)
                         date_added = True
                 
-                # Si rien trouvé avec méthode normale, utiliser positions fixes
-                if (not signature_added or not date_added):
-                    # Vérifier si c'est un PDF scanné
-                    text_instances = page.get_text("dict")
-                    has_text = False
-                    for block in text_instances.get("blocks", []):
-                        if block.get("type") == 0:
-                            for line in block.get("lines", []):
-                                if line.get("spans", []):
-                                    has_text = True
-                                    break
-                    
-                    # Si pas de texte, utiliser positions fixes (rapide et fiable)
-                    if not has_text:
-                        date_fixed, sig_fixed = self._find_zones_fixed_positions(page)
-                        
-                        if not date_added and date_fixed:
-                            self._insert_date(page, date_fixed)
-                            date_added = True
-                        
-                        if not signature_added and sig_fixed:
-                            self._insert_signature(page, sig_fixed, signature_width)
-                            signature_added = True
-                
-                # Si tout est trouvé, pas besoin de continuer
                 if signature_added and date_added:
                     break
             
-            doc.save(output_path)
             doc.close()
+            
+            # Si le PDF est scanné et rien n'a été trouvé
+            if is_scanned and not signature_added and not date_added:
+                return {
+                    'success': False,
+                    'error': 'PDF scanné détecté. Veuillez utiliser la version numérique originale (PDF avec texte). Contactez votre institut pour l\'obtenir.'
+                }
+            
+            # Sauvegarder seulement si des modifications ont été faites
+            if signature_added or date_added:
+                doc = fitz.open(input_path)
+                
+                for page_num in range(len(doc) - 1, -1, -1):
+                    page = doc[page_num]
+                    
+                    if not signature_added:
+                        sig_pos = self._find_signature_zone(page)
+                        if sig_pos:
+                            self._insert_signature(page, sig_pos, signature_width)
+                            signature_added = True
+                    
+                    if not date_added:
+                        date_pos = self._find_date_zone(page)
+                        if date_pos:
+                            self._insert_date(page, date_pos)
+                            date_added = True
+                    
+                    if signature_added and date_added:
+                        break
+                
+                doc.save(output_path)
+                doc.close()
             
             return {
                 'success': True,
