@@ -21,7 +21,7 @@ UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'outputs'
 SIGNATURE_FOLDER = 'signatures'
 ALLOWED_EXTENSIONS = {'pdf'}
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB (augmenté)
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
@@ -33,7 +33,7 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER, SIGNATURE_FOLDER]:
     os.makedirs(folder, exist_ok=True)
 
-# Signature par défaut (sera remplacée par celle de Charles)
+# Signature par défaut
 DEFAULT_SIGNATURE = os.path.join(SIGNATURE_FOLDER, 'signature_charles.png')
 
 
@@ -91,18 +91,15 @@ class PDFSigner:
                         has_text = True
                         break
         
-        # Si pas de texte extractible, utiliser OCR (optimisé)
+        # Si pas de texte extractible
         if not has_text:
-            # Utiliser la fonction optimisée qui trouve les deux zones en un appel
-            return None  # Sera géré par sign_pdf
+            return None
         
-        # Chercher plusieurs variantes du tableau cible
+        # Chercher seulement "responsable" (pas "cadre administration" qui est vide)
         responsable_y = None
         target_keywords = [
             ("responsable", "formation"),
-            ("responsable", "stage"),
-            ("cadre", "administration"),
-            ("cadre", "reserve")
+            ("responsable", "stage")
         ]
         
         for block in text_instances.get("blocks", []):
@@ -160,17 +157,15 @@ class PDFSigner:
                         has_text = True
                         break
         
-        # Si pas de texte extractible, sera géré par sign_pdf avec OCR optimisé
+        # Si pas de texte extractible
         if not has_text:
             return None
         
-        # Chercher plusieurs variantes du tableau cible
+        # Chercher seulement "responsable" (pas "cadre administration" qui est vide)
         responsable_y = None
         target_keywords = [
             ("responsable", "formation"),
-            ("responsable", "stage"),
-            ("cadre", "administration"),
-            ("cadre", "reserve")
+            ("responsable", "stage")
         ]
         
         for block in text_instances.get("blocks", []):
@@ -216,25 +211,20 @@ class PDFSigner:
         aspect_ratio = img.height / img.width
         height = width * aspect_ratio
         
-        # Ajuster pour que la signature soit bien positionnée verticalement
-        # et centrée dans le cadre
-        y_adjusted = y - 3
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
         
-        rect = fitz.Rect(x, y_adjusted, x + width, y_adjusted + height)
-        page.insert_image(rect, filename=self.signature_path)
+        rect = fitz.Rect(x, y - height - 3, x + width, y - 3)
+        page.insert_image(rect, stream=img_bytes.getvalue())
     
     def _insert_date(self, page, position, font_size=9):
-        """Insère la date avec une taille de police adaptée"""
+        """Insère la date"""
         x, y = position
-        
-        # Ajuster verticalement pour aligner avec le champ
-        y_adjusted = y + 3
-        
         page.insert_text(
-            (x, y_adjusted),
+            (x, y),
             self.current_date,
             fontsize=font_size,
-            fontname="helv",
             color=(0, 0, 0)
         )
     
