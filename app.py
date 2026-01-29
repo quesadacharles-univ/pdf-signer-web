@@ -1,6 +1,5 @@
 """
-Application Web pour Signature Automatique de PDF
-Flask app permettant d'uploader, signer et télécharger des PDF
+Application Web pour Signature Automatique de PDF - VERSION SIMPLE
 """
 
 from flask import Flask, render_template, request, send_file, jsonify, send_from_directory
@@ -11,7 +10,6 @@ from datetime import datetime
 import fitz  # PyMuPDF
 from PIL import Image
 import io
-import shutil
 from pathlib import Path
 
 app = Flask(__name__)
@@ -45,57 +43,12 @@ class PDFSigner:
         self.date_format = date_format
         self.current_date = datetime.now().strftime(date_format)
     
-    def _find_keyword_positions(self, page, keywords):
-        """Trouve les positions des mots-clés dans une page"""
-        positions = []
-        text_instances = page.get_text("dict")
-        
-        for block in text_instances.get("blocks", []):
-            if block.get("type") == 0:
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        text = span.get("text", "").lower()
-                        bbox = span.get("bbox", [])
-                        
-                        for keyword in keywords:
-                            if keyword.lower() in text:
-                                x = bbox[0]
-                                y = bbox[3]
-                                positions.append((x, y, keyword))
-        
-        return positions
-    
-    def _is_scanned_pdf(self, page):
-        """Vérifie si une page est scannée (sans texte extractible)"""
-        text_instances = page.get_text("dict")
-        
-        # Vérifier si le PDF contient du texte extractible
-        for block in text_instances.get("blocks", []):
-            if block.get("type") == 0:  # Type 0 = texte
-                for line in block.get("lines", []):
-                    if line.get("spans", []):
-                        return False  # Texte trouvé = pas scanné
-        
-        return True  # Pas de texte = scanné
-    
     def _find_signature_zone(self, page):
-        """Trouve la zone de signature dans le tableau responsable"""
+        """Trouve la zone de signature - SEULEMENT dans le cadre responsable"""
         text_instances = page.get_text("dict")
         
-        # Vérifier si le PDF contient du texte extractible
-        has_text = False
-        for block in text_instances.get("blocks", []):
-            if block.get("type") == 0:
-                for line in block.get("lines", []):
-                    if line.get("spans", []):
-                        has_text = True
-                        break
-        
-        # Si pas de texte extractible
-        if not has_text:
-            return None
-        
-        # Chercher seulement "responsable" (pas "cadre administration" qui est vide)
+        # Chercher SEULEMENT "responsable de la formation" ou "responsable des stages"
+        # PAS "cadre administration" (ce cadre est vide)
         responsable_y = None
         target_keywords = [
             ("responsable", "formation"),
@@ -133,6 +86,7 @@ class PDFSigner:
                             text = span.get("text", "").lower()
                             bbox = span.get("bbox", [])
                             
+                            # Chercher "signature" APRÈS le responsable ET à droite (x > 250)
                             if bbox[1] > responsable_y and "signature" in text and bbox[0] > 250:
                                 x = bbox[2] + 10
                                 y = bbox[1]
@@ -145,23 +99,10 @@ class PDFSigner:
         return None
     
     def _find_date_zone(self, page):
-        """Trouve la zone de date dans le tableau responsable"""
+        """Trouve la zone de date - SEULEMENT dans le cadre responsable"""
         text_instances = page.get_text("dict")
         
-        # Vérifier si le PDF contient du texte extractible
-        has_text = False
-        for block in text_instances.get("blocks", []):
-            if block.get("type") == 0:
-                for line in block.get("lines", []):
-                    if line.get("spans", []):
-                        has_text = True
-                        break
-        
-        # Si pas de texte extractible
-        if not has_text:
-            return None
-        
-        # Chercher seulement "responsable" (pas "cadre administration" qui est vide)
+        # Chercher SEULEMENT "responsable"
         responsable_y = None
         target_keywords = [
             ("responsable", "formation"),
@@ -197,6 +138,7 @@ class PDFSigner:
                             text = span.get("text", "").lower()
                             bbox = span.get("bbox", [])
                             
+                            # Chercher "date" APRÈS le responsable ET à gauche (x < 200)
                             if bbox[1] > responsable_y and "date" in text and bbox[0] < 200:
                                 x = bbox[2] + 10
                                 y = bbox[1]
@@ -205,7 +147,7 @@ class PDFSigner:
         return None
     
     def _insert_signature(self, page, position, width=50):
-        """Insère la signature avec une taille adaptée au cadre"""
+        """Insère la signature"""
         x, y = position
         img = Image.open(self.signature_path)
         aspect_ratio = img.height / img.width
@@ -229,69 +171,37 @@ class PDFSigner:
         )
     
     def sign_pdf(self, input_path, output_path, signature_width=50):
-        """Signe un PDF"""
+        """Signe un PDF - VERSION SIMPLE"""
         try:
             doc = fitz.open(input_path)
             signature_added = False
             date_added = False
-            is_scanned = False
             
+            # Parcourir les pages de la fin vers le début
             for page_num in range(len(doc) - 1, -1, -1):
                 page = doc[page_num]
                 
-                # Vérifier si la page est scannée
-                if self._is_scanned_pdf(page):
-                    is_scanned = True
-                    continue
-                
+                # Chercher et ajouter la signature
                 if not signature_added:
                     sig_pos = self._find_signature_zone(page)
                     if sig_pos:
                         self._insert_signature(page, sig_pos, signature_width)
                         signature_added = True
                 
+                # Chercher et ajouter la date
                 if not date_added:
                     date_pos = self._find_date_zone(page)
                     if date_pos:
                         self._insert_date(page, date_pos)
                         date_added = True
                 
+                # Si on a tout trouvé, pas besoin de continuer
                 if signature_added and date_added:
                     break
             
+            # Sauvegarder le PDF
+            doc.save(output_path)
             doc.close()
-            
-            # Si le PDF est scanné et rien n'a été trouvé
-            if is_scanned and not signature_added and not date_added:
-                return {
-                    'success': False,
-                    'error': 'PDF scanné détecté. Veuillez utiliser la version numérique originale (PDF avec texte). Contactez votre institut pour l\'obtenir.'
-                }
-            
-            # Sauvegarder seulement si des modifications ont été faites
-            if signature_added or date_added:
-                doc = fitz.open(input_path)
-                
-                for page_num in range(len(doc) - 1, -1, -1):
-                    page = doc[page_num]
-                    
-                    if not signature_added:
-                        sig_pos = self._find_signature_zone(page)
-                        if sig_pos:
-                            self._insert_signature(page, sig_pos, signature_width)
-                            signature_added = True
-                    
-                    if not date_added:
-                        date_pos = self._find_date_zone(page)
-                        if date_pos:
-                            self._insert_date(page, date_pos)
-                            date_added = True
-                    
-                    if signature_added and date_added:
-                        break
-                
-                doc.save(output_path)
-                doc.close()
             
             return {
                 'success': True,
@@ -309,11 +219,10 @@ def allowed_file(filename):
 
 
 def clean_old_files():
-    """Nettoie les vieux fichiers (optionnel)"""
+    """Nettoie les vieux fichiers"""
     for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER]:
         for file in Path(folder).glob('*'):
             if file.is_file():
-                # Supprimer les fichiers de plus de 1 heure
                 if (datetime.now().timestamp() - file.stat().st_mtime) > 3600:
                     file.unlink()
 
@@ -328,7 +237,6 @@ def index():
 def upload_files():
     """Upload et signature des PDF"""
     
-    # Vérifier qu'il y a des fichiers
     if 'files[]' not in request.files:
         return jsonify({'error': 'Aucun fichier fourni'}), 400
     
@@ -337,35 +245,27 @@ def upload_files():
     if not files or files[0].filename == '':
         return jsonify({'error': 'Aucun fichier sélectionné'}), 400
     
-    # Nettoyer les anciens fichiers
     clean_old_files()
     
-    # Vérifier que la signature existe
     if not os.path.exists(DEFAULT_SIGNATURE):
         return jsonify({'error': 'Signature non trouvée'}), 500
     
-    # Créer le signataire
     signer = PDFSigner(DEFAULT_SIGNATURE)
     
     results = []
-    signed_files = []
     
-    # Traiter chaque fichier
     for file in files:
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             unique_filename = f"{timestamp}_{filename}"
             
-            # Sauvegarder le fichier uploadé
             input_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
             file.save(input_path)
             
-            # Créer le nom de fichier de sortie
             output_filename = f"signed_{filename}"
             output_path = os.path.join(app.config['OUTPUT_FOLDER'], f"{timestamp}_{output_filename}")
             
-            # Signer le PDF
             result = signer.sign_pdf(input_path, output_path)
             
             if result['success']:
@@ -377,7 +277,6 @@ def upload_files():
                     'signature_found': result['signature_found'],
                     'date_found': result['date_found']
                 })
-                signed_files.append(output_path)
             else:
                 results.append({
                     'filename': filename,
@@ -385,7 +284,6 @@ def upload_files():
                     'error': result.get('error', 'Erreur inconnue')
                 })
             
-            # Supprimer le fichier uploadé
             os.remove(input_path)
         else:
             results.append({
@@ -404,13 +302,13 @@ def upload_files():
 
 @app.route('/download/<filename>')
 def download_file(filename):
-    """Télécharger un fichier signé individuel"""
+    """Télécharger un fichier signé"""
     try:
         return send_from_directory(
             app.config['OUTPUT_FOLDER'],
             filename,
             as_attachment=True,
-            download_name=filename.split('_', 2)[-1]  # Retirer le timestamp
+            download_name=filename.split('_', 2)[-1]
         )
     except Exception as e:
         return jsonify({'error': str(e)}), 404
@@ -420,13 +318,10 @@ def download_file(filename):
 def download_all():
     """Télécharger tous les PDF signés dans un ZIP"""
     try:
-        # Créer un fichier ZIP en mémoire
         memory_file = io.BytesIO()
         
         with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # Ajouter tous les fichiers du dossier output
             for file in Path(app.config['OUTPUT_FOLDER']).glob('*.pdf'):
-                # Utiliser le nom sans timestamp pour le zip
                 clean_name = '_'.join(file.name.split('_')[2:])
                 zipf.write(file, clean_name)
         
@@ -445,7 +340,7 @@ def download_all():
 
 @app.route('/clear')
 def clear_files():
-    """Nettoyer tous les fichiers temporaires"""
+    """Nettoyer les fichiers temporaires"""
     try:
         for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER]:
             for file in Path(folder).glob('*'):
@@ -457,5 +352,4 @@ def clear_files():
 
 
 if __name__ == '__main__':
-    # Mode développement
     app.run(debug=True, host='0.0.0.0', port=5000)
