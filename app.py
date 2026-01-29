@@ -200,7 +200,17 @@ class PDFSigner:
                 if signature_added and date_added:
                     break
             
-            # Sauvegarder le PDF
+            # Si rien n'a été trouvé, retourner une erreur
+            if not signature_added and not date_added:
+                doc.close()
+                return {
+                    'success': False,
+                    'error': 'Aucun cadre "responsable de la formation" trouvé. PDF peut-être scanné ou format non reconnu.',
+                    'signature_found': False,
+                    'date_found': False
+                }
+            
+            # Sauvegarder le PDF seulement si au moins une modification
             doc.save(output_path)
             doc.close()
             
@@ -211,7 +221,12 @@ class PDFSigner:
             }
             
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            return {
+                'success': False, 
+                'error': f'Erreur lors du traitement: {str(e)}',
+                'signature_found': False,
+                'date_found': False
+            }
 
 
 def allowed_file(filename):
@@ -270,14 +285,23 @@ def upload_files():
             result = signer.sign_pdf(input_path, output_path)
             
             if result['success']:
-                results.append({
-                    'filename': filename,
-                    'output_filename': output_filename,
-                    'output_path': f"{timestamp}_{output_filename}",
-                    'status': 'success',
-                    'signature_found': result['signature_found'],
-                    'date_found': result['date_found']
-                })
+                # Vérifier que le fichier de sortie existe bien
+                if os.path.exists(output_path):
+                    results.append({
+                        'filename': filename,
+                        'output_filename': output_filename,
+                        'output_path': f"{timestamp}_{output_filename}",
+                        'status': 'success',
+                        'signature_found': result['signature_found'],
+                        'date_found': result['date_found']
+                    })
+                else:
+                    # Le fichier n'a pas été créé
+                    results.append({
+                        'filename': filename,
+                        'status': 'error',
+                        'error': 'Aucune zone de signature trouvée dans ce PDF'
+                    })
             else:
                 results.append({
                     'filename': filename,
