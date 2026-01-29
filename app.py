@@ -157,7 +157,8 @@ class PDFSigner:
         img.save(img_bytes, format='PNG')
         img_bytes.seek(0)
         
-        rect = fitz.Rect(x, y - height - 3, x + width, y - 3)
+        # Position ajustée : signature commence à y+1 et descend
+        rect = fitz.Rect(x, y + 1, x + width, y + 1 + height)
         page.insert_image(rect, stream=img_bytes.getvalue())
     
     def _insert_date(self, page, position, font_size=9):
